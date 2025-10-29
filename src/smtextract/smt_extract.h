@@ -25,7 +25,7 @@
 
 #define FILLER_POS bsqon::SourcePos{0, 0, 0, 0}
 
-void badArgs(const char* msg);
+void printUsage(const char* msg);
 bool validPath(const char* filepath, const char* extension);
 std::string valueToSMTStr(std::string id, bsqon::Value* val);
 

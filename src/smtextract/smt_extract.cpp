@@ -848,16 +848,6 @@ std::optional<std::pair<z3::func_decl, z3::func_decl>> ValueExtractor::findConst
     return std::nullopt;
 };
 
-void badArgs(const char* msg)
-{
-    const char* usage = "USAGE: smtextract <formula.smt2> <fn_signature.json> <assembly.json> --<MODE>\nMODES:\n"
-                        "\t-t|--test      - Use extractor for tests.\n"
-                        "\t-m|--mock      - Use extractor at runtime.";
-
-    printf("%s\n", usage);
-    printf("%s\n", msg);
-    exit(1);
-}
 
 bool validPath(const char* filepath, const char* extension)
 {
