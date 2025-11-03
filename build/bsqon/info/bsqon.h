@@ -10,6 +10,16 @@ using json = nlohmann::json;
 #include <boost/multiprecision/cpp_dec_float.hpp>
 #include <regex>
 
+// SmtNameType Options:
+// SMT_TYPE					= '::' -> '@',
+// STRUCT_CONSTRUCT			= tk-mk,
+// STRUCT_TERM_CONSTRUCT	= @Term-tk-mk,
+// STRUCT_TERM_FIELD		= @Term-tk-value,
+// STRUCT_PRIM_CONSTRUCT	= Get T-mk from X<T>,
+// PRIM_CONSTRUCT	        = Get T from X<T>,
+// NAMESPACE_NAME			= //TODO,
+// TYPE_CONST_NAME			= //TODO,
+// TERM_SUBTYPE_FN_NAME		= @SubtypeOf-tk,
 typedef enum SmtNameType
 {
     SMT_TYPE,

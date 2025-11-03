@@ -104,16 +104,11 @@ function decide(forecast: Forecast, rentalinfo: RentalAvailabilityInfo, requeste
     }
 }
 
-function getForecast(iata:String): Forecast = s_mockService;
+function getRentalAvailabilityInfo(location: String): RentalAvailabilityInfo = s_mockService;
 
-%%main(rentalinfo: RentalAvailabilityInfo, requestedQuantity: Nat, allowPartials: Bool)
 public function main(): (|Nat, Reason|) {
 	let forecast = getForecast("JFK");
-	let rentalinfo = RentalAvailabilityInfo{
-		inventory = 50n,
-		reservations = 25n,
-		returns = 12n,
-	};
+	let rentalinfo = getRentalAvailabilityInfo("Queens, New York");
 
 	let requestedQuantity = 8n;
 	let allowPartials = true;
@@ -126,4 +121,6 @@ public function main(): (|Nat, Reason|) {
 
     return decision;
 }
+
+function getForecast(iata: String): Forecast = s_mockService;
 

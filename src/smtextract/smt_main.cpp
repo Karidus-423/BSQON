@@ -2,12 +2,14 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <stdio.h>
 #include <string>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
+
+const std::string bsq_cmds_dir = "../../../../bin/src/cmd";
 
 // MOCK_RUNNER,
 // TEST_RUNNER,
@@ -27,9 +29,9 @@ typedef enum _ExtractorMode
 typedef struct _ExtractorMetadata
 {
     std::vector<std::string> bsq_files;
-    std::pmr::unordered_map<std::string, std::string> mock_signatures;
+    std::pmr::unordered_map<std::string, json> mock_signatures;
     std::string smt_file;
-    std::string type_info;
+    json type_info;
     ExtractorMode mode;
 } ExtractorMetadata;
 
@@ -79,39 +81,130 @@ std::optional<z3::expr> findConstantInModel(z3::model m, std::string id)
     return std::nullopt;
 }
 
-//TODO: Pass variable names that need to be looked for here.
-std::string patchSMTFormula(std::string smt_file, std::pmr::unordered_map<std::string, std::string> mock_signatures)
+std::pmr::unordered_map<std::string, std::string> getValidators(z3::model m)
+{
+    std::pmr::unordered_map<std::string, std::string> validator_map;
+
+    for (uint i = 0; i < m.num_funcs(); ++i)
+    {
+        z3::func_decl fn = m.get_func_decl(i);
+        std::string fn_str = fn.name().str();
+
+        // Skip anything that doesn't have "@Validate"
+        if (fn_str.find("@Validate") == std::string::npos)
+        {
+            continue;
+        }
+
+        // Split at the first '-'
+        size_t sep = fn_str.find('-');
+        if (sep == std::string::npos)
+        {
+            continue;
+        }
+
+        std::string validator_type = fn_str.substr(0, sep);
+        std::string validator_sort = fn_str.substr(sep + 1);
+        if (validator_sort.empty() || validator_type.empty())
+        {
+            continue;
+        }
+
+        bool is_root_validator = (validator_type.find("Root") != std::string::npos);
+
+        auto it = validator_map.find(validator_sort);
+
+        if (it == validator_map.end())
+        {
+            // First time we see this sort — store it
+            validator_map.emplace(validator_sort, fn_str);
+        }
+        else
+        {
+            // Already have one — replace only if new one is Root and old isn't
+            bool existing_is_root = (it->second.find("Root") != std::string::npos);
+            if (is_root_validator && !existing_is_root)
+            {
+                it->second = fn_str;
+            }
+            // else: ignore (keep the existing Root or existing non-root)
+        }
+    }
+
+    return validator_map;
+}
+
+std::string validateReturn(std::pmr::unordered_map<std::string, json> mock_signatures,
+                           std::pmr::unordered_map<bsqon::TypeKey, std::string> validator_map)
+{
+    std::string validating_mocks;
+    for (auto& mock : mock_signatures)
+    {
+        bsqon::TypeKey tkey = mock.second["return"];
+        std::string tkey_smt = tKeyToSmtName(tkey, SMT_TYPE);
+
+        std::string mock_validator = validator_map.at(tkey_smt);
+
+        validating_mocks += "(assert (" + mock_validator + " " + "@retMock-" + tkey_smt + "))";
+    }
+
+    return validating_mocks;
+}
+
+std::string validateParameters(std::pmr::unordered_map<std::string, json> mock_signatures,
+                               std::pmr::unordered_map<bsqon::TypeKey, std::string> validator_map)
+{
+    std::string validating_mocks;
+
+    for (auto& mock : mock_signatures)
+    {
+        for (auto arg : mock.second["args"])
+        {
+			std::string id = arg["name"];
+			bsqon::TypeKey tkey = arg["type"];
+            std::string tkey_smt = tKeyToSmtName(tkey, SMT_TYPE);
+
+            std::string mock_validator = validator_map.at(tkey_smt);
+
+            validating_mocks += "(assert (" + mock_validator + " " + "@retMock-" + tkey_smt + "))";
+        }
+    }
+    return validating_mocks;
+}
+
+// TODO: Pass variable names that need to be looked for here.
+std::string patchSMTFormula(std::string smt_file, std::pmr::unordered_map<std::string, json> mock_signatures,
+                            ExtractorMode mode)
 {
     // HACK: Fix to prevent z3 to optimize the functions that use define-fun.
     std::string helper_fn = ";;;;;;;;;;;;;;;\n (declare-fun MockTest (Int) Int) "
                             "(assert (> (MockTest 5) 2))";
-
-	z3::context c;
-	z3::solver sol(c);
-	std::string formula = smt_file + helper_fn;
-	sol.from_string(formula.c_str());
-	z3::check_result cr = sol.check();
-	if (cr != z3::sat) {
+    z3::context c;
+    z3::solver sol(c);
+    std::string formula = smt_file + helper_fn;
+    sol.from_string(formula.c_str());
+    z3::check_result cr = sol.check();
+    if (cr != z3::sat)
+    {
         std::cout << "Got " << cr << " from .smt2 file while patching.";
         exit(1);
-	}
+    }
 
-	z3::model m = sol.get_model();
+    std::string validate_sorts = " ";
 
-	uint n_fn = m.num_funcs();
-	for (size_t i = 0; i < mock_signatures.size(); ++i) {
-		z3::func_decl fn = m.get_func_decl(i);
+    z3::model m = sol.get_model();
 
-		//Change bsqon name type to smt type.
-		//If current functions has the name of the type. Check if there is a Root or not. If root
-		//is present use the root. If not use the non-root @Validator.
-		if (fn.name().str().find(mock_signatures.fi)) {
-			//For each hit add the use of the validator for the name of the constant.
-		}
-	}
+    std::pmr::unordered_map<bsqon::TypeKey, std::string> validators = getValidators(m);
+    switch (mode)
+    {
+    case (MOCK_RUNNER):
+        validate_sorts = validateReturn(mock_signatures, validators);
+        break;
+    case (TEST_RUNNER):
+        validate_sorts = validateParameters(mock_signatures, validators);
+        break;
+    }
 
-
-	std::string validate_sorts = " ";
     std::string smt_formula = smt_file + helper_fn + validate_sorts;
 
     return smt_formula;
@@ -167,10 +260,12 @@ std::string runBosqueCompiler(std::string cmd)
 
 void processBsqFiles(ExtractorMetadata* meta)
 {
-    std::string gen_bsq_script = "/home/karidus/work/BosqueCore/bin/src/cmd/bosque.js";
-    std::string gen_smt_script = "/home/karidus/work/BosqueCore/bin/src/cmd/analyze.js";
-    std::string jsout_dir = "/tmp/smtextract/jsout";
-    std::string smtout_dir = "/tmp/smtextract/smtout";
+    std::string gen_bsq_script = bsq_cmds_dir + "/bosque.js";
+    std::string gen_smt_script = bsq_cmds_dir + "/analyze.js";
+    std::string tmp_dir = "/tmp/smtextract";
+    mkdir(tmp_dir.c_str(), 0777);
+    std::string jsout_dir = tmp_dir + "/jsout";
+    std::string smtout_dir = tmp_dir + "/smtout";
     std::string files = "";
 
     for (std::string file : meta->bsq_files)
@@ -190,18 +285,17 @@ void processBsqFiles(ExtractorMetadata* meta)
         std::string target_type_dir = jsout_dir + "/targettype.json";
         std::string sig_info = readFile(target_type_dir.c_str());
 
-        meta->mock_signatures[sig.first] = sig_info;
+        meta->mock_signatures[sig.first] = json::parse(sig_info);
     }
 
     std::string type_info_dir = jsout_dir + "/typeinfo.json";
-    meta->type_info = readFile(type_info_dir.c_str());
+    meta->type_info = json::parse(readFile(type_info_dir.c_str()));
 
     std::string smt_cmd = "node " + gen_smt_script + files + " --output " + smtout_dir;
     std::string smt_ouput = runBosqueCompiler(smt_cmd);
     std::string smtfile_dir = smtout_dir + "/formula.smt2";
 
-    meta->smt_file = patchSMTFormula(readFile(smtfile_dir.c_str()), meta->mock_signatures);
-    std::cout << meta->smt_file << "\n";
+    meta->smt_file = patchSMTFormula(readFile(smtfile_dir.c_str()), meta->mock_signatures, meta->mode);
 }
 
 ExtractorMetadata* processArgs(int argc, char** argv)
@@ -271,8 +365,6 @@ void runMockToResult(bsqon::AssemblyInfo* asm_info, json mock_json, z3::solver& 
     }
 
     z3::model m = sol.get_model();
-    // TODO: TEMP
-    std::cout << m << "\n";
 
     auto const_ex = findConstantInModel(m, ret_id);
     if (!const_ex.has_value())
@@ -298,8 +390,6 @@ void runMockToArgs(bsqon::AssemblyInfo* asm_info, json mock_json, z3::solver& so
         bsqon::Type* arg_t = asm_info->lookupTypeKey(tkey);
 
         z3::model m = sol.get_model();
-        // TODO: TEMP
-        std::cout << m << "\n";
         z3::expr arg_ex(sol.ctx());
 
         ExtractSig sig = {
@@ -343,23 +433,21 @@ int main(int argc, char** argv)
 
     // Load TYPEINFO FILE
     bsqon::AssemblyInfo asm_info;
-    json json_asm = json::parse(arg_meta->type_info);
 
-    bsqon::AssemblyInfo::parse(json_asm, asm_info);
-    bsqon::loadAssembly(json_asm, asm_info);
+    bsqon::AssemblyInfo::parse(arg_meta->type_info, asm_info);
+    bsqon::loadAssembly(arg_meta->type_info, asm_info);
 
     // Load FN INFO FILE
     for (auto& mock_sig : arg_meta->mock_signatures)
     {
-        json mock_sig_json = json::parse(mock_sig.second);
 
         switch (arg_meta->mode)
         {
         case MOCK_RUNNER:
-            runMockToResult(&asm_info, mock_sig_json, sol);
+            runMockToResult(&asm_info, mock_sig.second, sol);
             break;
         case TEST_RUNNER:
-            runMockToArgs(&asm_info, mock_sig_json, sol);
+            runMockToArgs(&asm_info, mock_sig.second, sol);
             break;
         };
     }
